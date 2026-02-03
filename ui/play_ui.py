@@ -168,6 +168,8 @@ class PlayUI(BaseScreen):
         # 音符Widgets
         self.note_widgets: List[NoteWidget] = []
         self.active_notes: Dict[int, NoteWidget] = {}  # 活跃音符
+        self._next_note_index = 0
+        self._last_update_time = 0.0
         
         # UI组件
         self.judgment_line: Optional[JudgmentLine] = None
@@ -509,6 +511,10 @@ class PlayUI(BaseScreen):
         chart = self.game_engine.current_chart
         timing = chart.timing_system
         note_times = self.game_engine.note_times if self.game_engine.note_times else None
+
+        if current_time < self._last_update_time:
+            self._reset_note_widgets()
+        self._last_update_time = current_time
         
         # 计算可见时间范围（提前2秒显示）
         visible_start = current_time - 2.0
@@ -524,15 +530,20 @@ class PlayUI(BaseScreen):
                 self.remove_widget(widget)
             
         # 添加新音符
-        for i, note in enumerate(chart.notes):
-            note_time = note_times[i] if note_times else timing.beat_to_time(note.beat)
-            
-            # 检查是否在可见范围内且尚未创建widget
-            if visible_start <= note_time <= visible_end and i not in self.active_notes:
+        while self._next_note_index < len(chart.notes):
+            note = chart.notes[self._next_note_index]
+            note_time = note_times[self._next_note_index] if note_times else timing.beat_to_time(note.beat)
+            if note_time < visible_start:
+                self._next_note_index += 1
+                continue
+            if note_time > visible_end:
+                break
+            if self._next_note_index not in self.active_notes:
                 widget = NoteWidget(note, self.lane_width)
                 self.note_widgets.append(widget)
-                self.active_notes[i] = widget
+                self.active_notes[self._next_note_index] = widget
                 self.add_widget(widget)
+            self._next_note_index += 1
                     
         # 更新所有音符位置
         for note_index, widget in self.active_notes.items():
@@ -656,6 +667,7 @@ class PlayUI(BaseScreen):
         
     def on_enter(self):
         """进入界面时"""
+        self._reset_note_widgets()
         # 开始更新循环
         Clock.schedule_interval(self._update_callback, 1.0 / 60.0)  # 60fps
         
@@ -663,8 +675,18 @@ class PlayUI(BaseScreen):
         """离开界面时"""
         # 停止更新循环
         Clock.unschedule(self._update_callback)
+        self._reset_note_widgets()
         
     def _update_callback(self, dt):
         """更新回调"""
         if self.game_engine.state.value == 3:  # PLAYING
             self.update(self.game_engine.current_time)
+
+    def _reset_note_widgets(self) -> None:
+        """重置音符显示缓存"""
+        for widget in list(self.note_widgets):
+            self.remove_widget(widget)
+        self.note_widgets.clear()
+        self.active_notes.clear()
+        self._next_note_index = 0
+        self._last_update_time = 0.0
