@@ -138,7 +138,7 @@ def main():
     try:
         logger.info(f"项目根目录: {Path(__file__).parent}")
         
-        # 配置系统字体
+        # 在main.py的main()函数中，修改字体配置部分：
         try:
             from kivy.core.text import LabelBase
             from kivy.config import Config
@@ -148,16 +148,21 @@ def main():
             font_path = font_dir / 'SourceHanSansSC-Regular.otf'
             
             if font_path.exists():
+                # 注册字体
                 LabelBase.register(name='DefaultFont', fn_regular=str(font_path))
-                Config.set('kivy', 'default_font', ['DefaultFont', 'Roboto', 'Arial', 'symbola'])
-                logger.info("使用自定义字体")
+                # 设置默认字体
+                Config.set('kivy', 'default_font', ['DefaultFont', 'SourceHanSansSC-Regular', 'Roboto', 'Arial', 'symbola'])
+                logger.info(f"使用自定义字体: {font_path}")
             else:
-                # 使用系统默认字体
+                # 使用系统默认字体，但添加中文字体支持
+                logger.warning(f"字体文件不存在: {font_path}")
                 Config.set('kivy', 'default_font', ['Roboto', 'Arial', 'symbola'])
                 logger.info("使用系统默认字体")
                 
         except Exception as e:
             logger.warning(f"字体配置失败: {e}")
+            # 设置默认字体
+            Config.set('kivy', 'default_font', ['Roboto', 'Arial', 'symbola'])      
         
         logger.info("启动Kivy应用")
         MystiaRhythmApp().run()

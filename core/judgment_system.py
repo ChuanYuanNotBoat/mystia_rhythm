@@ -27,7 +27,6 @@ class JudgmentResult:
     combo: int
     lane: Optional[int] = None
     note: Optional[object] = None
-    time_diff: Optional[float] = None
 
 
 class ScoreCalculator:
@@ -123,38 +122,63 @@ class JudgmentSystem:
         self.calculator = ScoreCalculator()
         self.windows = {
             "BEST": 20,   # ±20ms
-            "COOL": 40,   # ±40ms
-            "GOOD": 80,   # ±80ms
+            "COOL": 35,   # ±35ms
+            "GOOD": 60,   # ±60ms
             "MISS": 120   # ±120ms
         }
         self.judged_notes = {}
         
-    def judge_note(self, note, current_time: float, note_time: float, pressed: bool = True) -> Optional[JudgmentResult]:
-        """判定音符"""
-        if not pressed:
-            return None
-            
-        # 计算时间差（毫秒）
-        time_diff = abs(current_time - note_time) * 1000
+    def judge_note(self, note: None, current_time: float, note_time: float, is_auto_miss: bool = False) -> Optional[JudgmentResult]:
+        """
+        判定音符
         
-        # 确定判定等级
-        judgment = Judgment.MISS
-        if time_diff <= self.windows["BEST"]:
-            judgment = Judgment.BEST
-        elif time_diff <= self.windows["COOL"]:
-            judgment = Judgment.COOL
-        elif time_diff <= self.windows["GOOD"]:
-            judgment = Judgment.GOOD
+        Args:
+            note: 音符
+            current_time: 当前时间
+            note_time: 音符时间
+            is_auto_miss: 是否为自动MISS
             
         # 创建判定结果
         result = self.calculator.add_judgment(judgment)
         result.offset = time_diff
-        result.note = note
-        result.time_diff = time_diff
         if hasattr(note, "column"):
             result.lane = note.column
         
         return result
+        Returns:
+            JudgmentResult对象，如果判定失败返回None
+        """
+        try:
+            # 计算时间差
+            if note_time is None:
+                time_diff = 0.0
+            else:
+                time_diff = current_time - note_time
+            
+            # 确定判定等级
+            if is_auto_miss:
+                judgment = Judgment.MISS
+            else:
+                judgment = self.calculator.calculate_judgment(abs(time_diff))
+            
+            # 更新统计
+            self.calculator.update_counts(judgment)
+            
+            # 创建结果
+            result = JudgmentResult(
+                judgment=judgment,
+                note=note,
+                time_diff=time_diff,
+                combo=self.get_combo(),
+                lane=note.column
+            )
+            
+            return result
+        except Exception as e:
+            logger.error(f"判定音符时出错: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
         
     def get_accuracy(self) -> float:
         """获取准确率"""

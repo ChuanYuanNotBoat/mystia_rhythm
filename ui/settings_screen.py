@@ -25,12 +25,12 @@ class SettingsScreen(BaseScreen):
         logger.info("初始化设置界面")
         super().__init__(game_engine, **kwargs)
         
-        # 保存控件引用，以便在_on_save中访问
+        # 保存控件引用
         self.speed_slider = None
         self.note_size_slider = None
         self.latency_slider = None
         self.volume_slider = None
-        self.key_layout_buttons = {}  # 存储键位布局按钮
+        self.key_layout_buttons = {}
         
         self._create_ui()
         
@@ -65,7 +65,7 @@ class SettingsScreen(BaseScreen):
         # 设置项容器
         settings_layout = GridLayout(cols=2, spacing=20, size_hint_y=0.6)
         
-        # 流速设置 - 改为1-10
+        # 流速设置
         speed_label = CustomLabel(
             text='流速:',
             font_size=20,
@@ -76,15 +76,11 @@ class SettingsScreen(BaseScreen):
         speed_slider_layout = BoxLayout(orientation='horizontal', spacing=10)
         
         current_speed = config.get('gameplay.scroll_speed', 1.0)
-        # 确保当前值在1-10范围内
-        if current_speed < 1.0:
-            current_speed = 1.0
-        elif current_speed > 10.0:
-            current_speed = 10.0
+        current_speed = max(1.0, min(10.0, current_speed))
         
         self.speed_slider = Slider(
-            min=1.0,  # 最小值改为1
-            max=10.0,  # 最大值改为10
+            min=1.0,
+            max=10.0,
             value=current_speed,
             size_hint_x=0.7
         )
@@ -201,7 +197,7 @@ class SettingsScreen(BaseScreen):
             )
             btn.layout = layout
             btn.bind(on_press=self._on_key_layout_change)
-            self.key_layout_buttons[layout] = btn  # 存储引用
+            self.key_layout_buttons[layout] = btn
             key_layout_buttons.add_widget(btn)
         
         # 添加设置项
@@ -269,49 +265,36 @@ class SettingsScreen(BaseScreen):
         logger.info("保存设置")
         
         try:
-            # 直接使用保存的控件引用来获取值
-            # 流速
+            # 使用保存的控件引用来获取值
             if self.speed_slider:
                 config.set('gameplay.scroll_speed', self.speed_slider.value)
-                logger.debug(f"流速设置: {self.speed_slider.value}")
             
-            # 音符大小
             if self.note_size_slider:
                 config.set('gameplay.note_size', self.note_size_slider.value)
-                logger.debug(f"音符大小设置: {self.note_size_slider.value}")
             
-            # 音频延迟
             if self.latency_slider:
                 config.set('audio.audio_latency', self.latency_slider.value)
-                logger.debug(f"音频延迟设置: {self.latency_slider.value}")
             
-            # 主音量
             if self.volume_slider:
                 config.set('audio.volume_master', self.volume_slider.value)
-                logger.debug(f"主音量设置: {self.volume_slider.value}")
             
             # 键位布局
-            selected_layout = 'standard'  # 默认值
+            selected_layout = 'standard'
             for layout, btn in self.key_layout_buttons.items():
                 if btn.state == 'down':
                     selected_layout = layout
                     break
             config.set('gameplay.key_layout', selected_layout)
-            logger.debug(f"键位布局设置: {selected_layout}")
             
             # 应用设置到游戏引擎
-            if self.game_engine:
-                # 更新流速
-                if self.speed_slider:
-                    self.game_engine.scroll_speed = self.speed_slider.value
-                    logger.debug(f"游戏引擎流速更新为: {self.speed_slider.value}")
+            if self.game_engine and self.speed_slider:
+                self.game_engine.scroll_speed = self.speed_slider.value
                 
-                # 更新音频音量
-                if hasattr(self.game_engine.audio, 'set_volume') and self.volume_slider:
+            if self.game_engine and hasattr(self.game_engine, 'audio'):
+                if hasattr(self.game_engine.audio, 'set_volume'):
                     self.game_engine.audio.set_volume(
-                        master=self.volume_slider.value
+                        master=config.get('audio.volume_master', 0.8)
                     )
-                    logger.debug(f"音频音量更新为: {self.volume_slider.value}")
             
             logger.info("设置已保存")
             

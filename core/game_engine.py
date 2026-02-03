@@ -73,7 +73,7 @@ class GameEngine:
         self.notes: List[Note] = []
         self.note_times: List[float] = []  # 每个音符的时间
         self.note_positions: List[float] = []  # 每个音符的屏幕位置
-        
+        self.hold_notes: Dict[int, Dict] = {} 
         # 回调函数
         self.callbacks: Dict[str, List[Callable]] = {
             'on_note_hit': [],
@@ -271,9 +271,8 @@ class GameEngine:
         if not self.current_chart:
             return
             
-        # 获取当前时间和判定窗口
         current_time = self.current_time
-        judgment_window = 0.12  # 120ms转换为秒
+        judgment_window = 0.12
         
         # 检查每个音符
         for i, note in enumerate(self.notes):
@@ -311,9 +310,99 @@ class GameEngine:
             
         self.keys_pressed[lane] = pressed
         
-        # 如果按下，检查是否有可判定的音符
-        if pressed:
+        # 处理长按音符
+        if not pressed:
+            # 松开时检查长按音符
+            self._check_hold_release(lane)
+        else:
+            # 按下时检查所有音符
             self._check_note_hit(lane)
+            
+    def _check_note_hit(self, lane: int) -> None:
+        """检查指定轨道上的音符命中"""
+        if not self.current_chart:
+            return
+            
+        current_time = self.current_time
+        judgment_window = 0.12
+        
+        # 查找在判定窗口内的音符
+        for i, note in enumerate(self.notes):
+            # 只检查指定轨道的音符
+            if note.column != lane:
+                continue
+                
+            # 跳过已判定的音符
+            if i in self.judgment.judged_notes:
+                continue
+                
+            note_time = self.note_times[i]
+            if note_time is None:
+                continue
+                
+            time_diff = abs(current_time - note_time)
+            
+            # 如果在判定窗口内
+            if time_diff <= judgment_window:
+                # 进行判定
+                result = self.judgment.judge_note(note, current_time, note_time, True)
+                if result:
+                    self.judgment.judged_notes[i] = result
+                    
+                    # 如果是长按音符，开始追踪
+                    if note.type == NoteType.HOLD:
+                        self.hold_notes[i] = {
+                            'note': note,
+                            'start_time': current_time,
+                            'pressed': True
+                        }
+                    
+                    # 触发回调
+                    self._trigger_callbacks('on_note_hit', result)
+                    self._trigger_callbacks('on_combo_change', self.judgment.get_combo())
+                    self._trigger_callbacks('on_score_change', self.judgment.get_score())
+                    
+                    # 播放判定音效
+                    if note.sound:
+                        self.audio.play_sound(note.sound, note.volume)
+                    break
+                    
+    def _check_hold_release(self, lane: int) -> None:
+        """检查长按音符释放"""
+        current_time = self.current_time
+        
+        # 检查所有追踪中的长按音符
+        for note_idx, hold_info in list(self.hold_notes.items()):
+            note = hold_info['note']
+            
+            # 只检查指定轨道的音符
+            if note.column != lane:
+                continue
+                
+            # 如果音符已经结束
+            if note.endbeat:
+                end_time = self.current_chart.timing_system.beat_to_time(note.endbeat)
+                if current_time < end_time and hold_info['pressed']:
+                    # 提前松开，判定为MISS
+                    result = JudgmentResult(
+                        judgment=Judgment.MISS,
+                        note=note,
+                        time_diff=0,
+                        combo=self.judgment.get_combo(),
+                        lane=note.column
+                    )
+                    
+                    # 更新判定
+                    if note_idx in self.judgment.judged_notes:
+                        self.judgment.judged_notes[note_idx].judgment = Judgment.MISS
+                    
+                    # 触发回调
+                    self._trigger_callbacks('on_note_miss', result)
+                    self._trigger_callbacks('on_combo_change', self.judgment.get_combo())
+                    self._trigger_callbacks('on_score_change', self.judgment.get_score())
+                    
+                    # 移除追踪
+                    self.hold_notes.pop(note_idx, None)
             
     def _check_note_hit(self, lane: int) -> None:
         """检查指定轨道上的音符命中"""
