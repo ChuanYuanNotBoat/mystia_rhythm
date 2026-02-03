@@ -26,6 +26,8 @@ class JudgmentResult:
     score: int
     combo: int
     lane: Optional[int] = None
+    note: Optional[object] = None
+    time_diff: Optional[float] = None
 
 
 class ScoreCalculator:
@@ -75,6 +77,10 @@ class ScoreCalculator:
             score=score,
             combo=self.current_combo
         )
+
+    def update_counts(self, judgment: Judgment) -> JudgmentResult:
+        """兼容旧接口，更新判定统计"""
+        return self.add_judgment(judgment)
         
     def get_accuracy(self) -> float:
         """计算准确率"""
@@ -143,6 +149,10 @@ class JudgmentSystem:
         # 创建判定结果
         result = self.calculator.add_judgment(judgment)
         result.offset = time_diff
+        result.note = note
+        result.time_diff = time_diff
+        if hasattr(note, "column"):
+            result.lane = note.column
         
         return result
         
