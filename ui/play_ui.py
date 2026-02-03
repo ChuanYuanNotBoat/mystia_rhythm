@@ -490,6 +490,11 @@ class PlayUI(BaseScreen):
         if self.judgment_line:
             self.judgment_line.lane_width = self.lane_width
             self.judgment_line.size = (self.width, 200)
+            self.judgment_line.y = self.judgment_line_y
+            
+        for i, lane_btn in enumerate(self.lane_buttons):
+            lane_btn.size = (self.lane_width, 200)
+            lane_btn.pos = (i * self.lane_width, self.judgment_line_y - 100)
             
         # 更新所有音符位置
         for widget in self.note_widgets:
@@ -503,39 +508,35 @@ class PlayUI(BaseScreen):
             
         chart = self.game_engine.current_chart
         timing = chart.timing_system
+        note_times = self.game_engine.note_times if self.game_engine.note_times else None
         
         # 计算可见时间范围（提前2秒显示）
         visible_start = current_time - 2.0
         visible_end = current_time + 5.0 / self.scroll_speed
         
         # 清理超出范围的音符
-        widgets_to_remove = []
-        for i, widget in enumerate(self.note_widgets):
-            note_time = timing.beat_to_time(widget.note.beat)
-            if note_time > visible_end:
-                widgets_to_remove.append(i)
-                
-        # 反向移除，避免索引问题
-        for i in reversed(widgets_to_remove):
-            widget = self.note_widgets.pop(i)
-            self.remove_widget(widget)
+        for note_index, widget in list(self.active_notes.items()):
+            note_time = note_times[note_index] if note_times else timing.beat_to_time(widget.note.beat)
+            if note_time < visible_start:
+                self.active_notes.pop(note_index, None)
+                if widget in self.note_widgets:
+                    self.note_widgets.remove(widget)
+                self.remove_widget(widget)
             
         # 添加新音符
         for i, note in enumerate(chart.notes):
-            note_time = timing.beat_to_time(note.beat)
+            note_time = note_times[i] if note_times else timing.beat_to_time(note.beat)
             
             # 检查是否在可见范围内且尚未创建widget
-            if visible_start <= note_time <= visible_end:
-                # 检查是否已创建widget
-                note_exists = any(w.note == note for w in self.note_widgets)
-                if not note_exists:
-                    widget = NoteWidget(note, self.lane_width)
-                    self.note_widgets.append(widget)
-                    self.add_widget(widget)
+            if visible_start <= note_time <= visible_end and i not in self.active_notes:
+                widget = NoteWidget(note, self.lane_width)
+                self.note_widgets.append(widget)
+                self.active_notes[i] = widget
+                self.add_widget(widget)
                     
         # 更新所有音符位置
-        for widget in self.note_widgets:
-            note_time = timing.beat_to_time(widget.note.beat)
+        for note_index, widget in self.active_notes.items():
+            note_time = note_times[note_index] if note_times else timing.beat_to_time(widget.note.beat)
             
             # 计算Y坐标
             time_diff = note_time - current_time
@@ -551,7 +552,7 @@ class PlayUI(BaseScreen):
             widget.update_position(y_pos, hold_length)
             
             # 检查是否被判定
-            if i in self.game_engine.judgment.judged_notes:
+            if note_index in self.game_engine.judgment.judged_notes:
                 widget.judged = True
                 
     def _redraw(self) -> None:

@@ -143,6 +143,8 @@ class JudgmentSystem:
         # 创建判定结果
         result = self.calculator.add_judgment(judgment)
         result.offset = time_diff
+        if hasattr(note, "column"):
+            result.lane = note.column
         
         return result
         
