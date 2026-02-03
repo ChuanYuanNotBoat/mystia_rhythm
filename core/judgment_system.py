@@ -133,6 +133,13 @@ class JudgmentSystem:
             note_time: 音符时间
             is_auto_miss: 是否为自动MISS
             
+        # 创建判定结果
+        result = self.calculator.add_judgment(judgment)
+        result.offset = time_diff
+        if hasattr(note, "column"):
+            result.lane = note.column
+        
+        return result
         Returns:
             JudgmentResult对象，如果判定失败返回None
         """
