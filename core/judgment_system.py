@@ -75,6 +75,10 @@ class ScoreCalculator:
             score=score,
             combo=self.current_combo
         )
+
+    def update_counts(self, judgment: Judgment) -> JudgmentResult:
+        """兼容旧接口，更新判定统计"""
+        return self.add_judgment(judgment)
         
     def get_accuracy(self) -> float:
         """计算准确率"""
