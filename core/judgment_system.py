@@ -26,6 +26,7 @@ class JudgmentResult:
     score: int
     combo: int
     lane: Optional[int] = None
+    note: Optional[object] = None
 
 
 class ScoreCalculator:
