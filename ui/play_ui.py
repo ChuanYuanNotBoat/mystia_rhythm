@@ -31,7 +31,7 @@ class NoteWidget(Widget):
         self.note = note
         self.lane_width = lane_width
         self.is_hold = note.endbeat is not None
-        self.hold_length = 0.0  # 长按长度（像素）
+        self.hold_length = 0.0
         self.judged = False
         
         # 根据音符类型设置颜色
@@ -44,8 +44,49 @@ class NoteWidget(Widget):
         elif note.type == NoteType.FLICK:
             self.color = [1.0, 0.2, 0.8, 1.0]  # 粉色
         else:
-            self.color = [0.8, 0.8, 0.8, 1.0]  # 灰色
+            self.color = [0.8, 0.8, 0.8, 1.0]
             
+    def update_position(self, y_pos: float, hold_length: float = 0.0) -> None:
+        """更新音符位置"""
+        self.pos = (
+            self.note.column * self.lane_width + self.lane_width * 0.05,  # 留5%边距
+            y_pos
+        )
+        
+        # 设置大小
+        note_size = config.get('gameplay.note_size', 1.0)
+        self.size = (self.lane_width * 0.9, 30 * note_size)  # 高度增加，改为长方形
+            
+        # 如果是长按，更新长度
+        if self.is_hold:
+            self.hold_length = hold_length
+            
+    def draw(self) -> None:
+        """绘制音符"""
+        self.canvas.clear()
+        
+        with self.canvas:
+            # 设置颜色
+            Color(*self.color)
+            
+            if self.is_hold:
+                # 绘制长按音符（矩形）
+                Rectangle(pos=self.pos, size=(self.size[0], self.hold_length))
+                
+                # 绘制长按端点（长方形）
+                Rectangle(pos=self.pos, size=self.size)
+                Rectangle(pos=(self.pos[0], self.pos[1] + self.hold_length - self.size[1]), 
+                         size=self.size)
+            else:
+                # 绘制点击音符（长方形）
+                Rectangle(pos=self.pos, size=self.size)
+                
+            # 如果已判定，添加效果
+            if self.judged:
+                Color(1, 1, 1, 0.5)
+                Rectangle(pos=(self.pos[0] - 5, self.pos[1] - 5), 
+                         size=(self.size[0] + 10, self.size[1] + 10))
+                
     def update_position(self, y_pos: float, hold_length: float = 0.0) -> None:
         """更新音符位置"""
         self.pos = (
@@ -338,12 +379,13 @@ class PlayUI(BaseScreen):
         # 轨道按钮（用于触摸输入）
         self.lane_buttons = []
         for i in range(self.lanes):
+            # 计算按钮位置和大小，覆盖整个轨道区域
             lane_btn = CustomButton(
                 text='',
                 size_hint=(None, None),
-                size=(self.lane_width, 200),
-                pos=(i * self.lane_width, self.judgment_line_y - 100),
-                background_color=[1, 1, 1, 0.1]  # 半透明白色
+                size=(self.lane_width, self.height),  # 高度覆盖整个屏幕
+                pos=(i * self.lane_width, 0),  # 从底部开始
+                background_color=[1, 1, 1, 0.05]  # 非常透明，仅用于触摸检测
             )
             lane_btn.lane = i
             lane_btn.bind(
