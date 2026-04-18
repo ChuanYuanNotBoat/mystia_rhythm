@@ -546,32 +546,37 @@ class PlayUI(BaseScreen):
 
         
     def _update_notes(self, current_time: float) -> None:
-        """更新音符位置"""
+        """Update notes positions."""
         if not self.game_engine.current_chart:
             return
-            
+
         chart = self.game_engine.current_chart
         timing = chart.timing_system
         note_times = self.game_engine.note_times if self.game_engine.note_times else None
+        judged_notes = self.game_engine.judgment.judged_notes
 
         if current_time < self._last_update_time:
             self._reset_note_widgets()
         self._last_update_time = current_time
-        
-        # 计算可见时间范围（提前2秒显示）
+
         visible_start = current_time - 2.0
         visible_end = current_time + 5.0 / self.scroll_speed
-        
-        # 清理超出范围的音符
+
         for note_index, widget in list(self.active_notes.items()):
+            if note_index in judged_notes:
+                self.active_notes.pop(note_index, None)
+                if widget in self.note_widgets:
+                    self.note_widgets.remove(widget)
+                self.remove_widget(widget)
+                continue
+
             note_time = note_times[note_index] if note_times else timing.beat_to_time(widget.note.beat)
             if note_time < visible_start:
                 self.active_notes.pop(note_index, None)
                 if widget in self.note_widgets:
                     self.note_widgets.remove(widget)
                 self.remove_widget(widget)
-            
-        # 添加新音符
+
         while self._next_note_index < len(chart.notes):
             note = chart.notes[self._next_note_index]
             note_time = note_times[self._next_note_index] if note_times else timing.beat_to_time(note.beat)
@@ -580,34 +585,36 @@ class PlayUI(BaseScreen):
                 continue
             if note_time > visible_end:
                 break
+            if self._next_note_index in judged_notes:
+                self._next_note_index += 1
+                continue
+
             if self._next_note_index not in self.active_notes:
                 widget = NoteWidget(note, self.lane_width)
                 self.note_widgets.append(widget)
                 self.active_notes[self._next_note_index] = widget
                 self.add_widget(widget)
             self._next_note_index += 1
-                    
-        # 更新所有音符位置
-        for note_index, widget in self.active_notes.items():
+
+        for note_index, widget in list(self.active_notes.items()):
+            if note_index in judged_notes:
+                self.active_notes.pop(note_index, None)
+                if widget in self.note_widgets:
+                    self.note_widgets.remove(widget)
+                self.remove_widget(widget)
+                continue
+
             note_time = note_times[note_index] if note_times else timing.beat_to_time(widget.note.beat)
-            
-            # 计算Y坐标
             time_diff = note_time - current_time
             y_pos = self.judgment_line_y + (time_diff * 300 * self.scroll_speed)
-            
-            # 如果是长按，计算长度
+
             hold_length = 0
             if widget.note.endbeat:
                 end_time = timing.beat_to_time(widget.note.endbeat)
                 hold_length = (end_time - note_time) * 300 * self.scroll_speed
-                
-            # 更新位置
+
             widget.update_position(y_pos, hold_length)
-            
-            # 检查是否被判定
-            if note_index in self.game_engine.judgment.judged_notes:
-                widget.judged = True
-                
+
     def _redraw(self) -> None:
         """重绘所有元素"""
         # 绘制判定线
