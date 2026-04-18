@@ -2,12 +2,12 @@ import logging
 from pathlib import Path
 
 from kivy.animation import Animation
+from kivy.core.window import Window
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.gridlayout import GridLayout
 from kivy.uix.image import Image
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.slider import Slider
-from kivy.uix.textinput import TextInput
 from kivy.uix.togglebutton import ToggleButton
 
 from .ui_base import BaseScreen, CustomButton, CustomLabel
@@ -27,7 +27,10 @@ class SettingsScreen(BaseScreen):
         self.latency_slider = None
         self.volume_slider = None
         self.key_layout_buttons = {}
-        self.custom_binding_inputs = {}
+        self.custom_binding_buttons = {}
+        self.custom_binding_clear_buttons = {}
+        self._pending_custom_bindings = {}
+        self._capture_lane = None
 
         self.page_buttons = {}
         self.page_views = {}
@@ -41,6 +44,24 @@ class SettingsScreen(BaseScreen):
         self._row_widgets = []
 
         self._create_ui()
+
+    def _load_custom_bindings(self):
+        lane_count = max(1, int(config.get('gameplay.lanes', 4)))
+        saved_custom = config.get('gameplay.key_bindings', {})
+        result = {}
+        for lane in range(lane_count):
+            lane_keys = []
+            if isinstance(saved_custom, dict):
+                lane_value = saved_custom.get(str(lane), saved_custom.get(lane, []))
+                if isinstance(lane_value, str):
+                    lane_keys = [lane_value]
+                elif isinstance(lane_value, list):
+                    lane_keys = [str(k) for k in lane_value]
+            lane_keys = [k.strip().lower() for k in lane_keys if isinstance(k, str) and len(k.strip()) == 1]
+            if not lane_keys:
+                lane_keys = []
+            result[lane] = lane_keys
+        return result
 
     def _create_ui(self):
         bg_path = Path(__file__).parent.parent / 'assets' / 'images' / 'bg_menu.png'
@@ -95,6 +116,7 @@ class SettingsScreen(BaseScreen):
             tab_bar.add_widget(btn)
 
         self.page_host = BoxLayout(orientation='vertical')
+        self._pending_custom_bindings = self._load_custom_bindings()
 
         self.page_views['gameplay'] = self._build_gameplay_page()
         self.page_views['audio'] = self._build_audio_page()
@@ -213,16 +235,15 @@ class SettingsScreen(BaseScreen):
 
         content.add_widget(key_layout_buttons)
 
-        content.add_widget(self._section_title('Custom Bindings (comma separated)'))
+        content.add_widget(self._section_title('Custom Bindings (click bind, then press key)'))
 
         custom_bindings_layout = GridLayout(
-            cols=2,
+            cols=3,
             spacing=8,
             size_hint_y=None,
         )
         custom_bindings_layout.bind(minimum_height=custom_bindings_layout.setter('height'))
 
-        saved_custom = config.get('gameplay.key_bindings', {})
         lane_count = max(1, int(config.get('gameplay.lanes', 4)))
 
         for lane in range(lane_count):
@@ -233,25 +254,27 @@ class SettingsScreen(BaseScreen):
                 color=[1, 1, 1, 1],
             )
 
-            default_value = ''
-            if isinstance(saved_custom, dict):
-                lane_keys = saved_custom.get(str(lane), saved_custom.get(lane, []))
-                if isinstance(lane_keys, list):
-                    default_value = ','.join([str(k) for k in lane_keys])
-                elif isinstance(lane_keys, str):
-                    default_value = lane_keys
-
-            lane_input = TextInput(
-                text=default_value,
-                multiline=False,
+            bind_btn = CustomButton(
+                text=self._binding_button_text(lane),
                 size_hint_y=None,
                 height=38,
-                hint_text='example: d,f',
             )
-            self.custom_binding_inputs[lane] = lane_input
+            bind_btn.lane = lane
+            bind_btn.bind(on_release=self._start_capture_binding)
+            self.custom_binding_buttons[lane] = bind_btn
+
+            clear_btn = CustomButton(
+                text='Clear',
+                size_hint_y=None,
+                height=38,
+            )
+            clear_btn.lane = lane
+            clear_btn.bind(on_release=self._clear_lane_binding)
+            self.custom_binding_clear_buttons[lane] = clear_btn
 
             custom_bindings_layout.add_widget(lane_label)
-            custom_bindings_layout.add_widget(lane_input)
+            custom_bindings_layout.add_widget(bind_btn)
+            custom_bindings_layout.add_widget(clear_btn)
 
         content.add_widget(custom_bindings_layout)
 
@@ -362,6 +385,54 @@ class SettingsScreen(BaseScreen):
         if instance.state == 'down':
             logger.info(f"Selected key layout: {instance.layout}")
 
+    def _binding_button_text(self, lane: int) -> str:
+        keys = self._pending_custom_bindings.get(lane, [])
+        if not keys:
+            return 'Bind Key'
+        return f"Bound: {','.join(keys).upper()}"
+
+    def _refresh_binding_button(self, lane: int):
+        btn = self.custom_binding_buttons.get(lane)
+        if btn:
+            btn.text = self._binding_button_text(lane)
+
+    def _start_capture_binding(self, instance):
+        lane = getattr(instance, 'lane', None)
+        if lane is None:
+            return
+        self._capture_lane = lane
+        instance.text = 'Press a key...'
+
+    def _clear_lane_binding(self, instance):
+        lane = getattr(instance, 'lane', None)
+        if lane is None:
+            return
+        self._pending_custom_bindings[lane] = []
+        if self._capture_lane == lane:
+            self._capture_lane = None
+        self._refresh_binding_button(lane)
+
+    def _on_capture_key_down(self, window, key, scancode, codepoint, modifiers):
+        if self._capture_lane is None:
+            return False
+
+        c = (codepoint or '').strip().lower()
+        if len(c) != 1:
+            # unsupported key for custom mapping
+            lane = self._capture_lane
+            self._capture_lane = None
+            btn = self.custom_binding_buttons.get(lane)
+            if btn:
+                btn.text = 'Unsupported key'
+                self._refresh_binding_button(lane)
+            return True
+
+        lane = self._capture_lane
+        self._pending_custom_bindings[lane] = [c]
+        self._capture_lane = None
+        self._refresh_binding_button(lane)
+        return True
+
     def _on_save(self, *args):
         logger.info("Saving settings")
 
@@ -386,11 +457,9 @@ class SettingsScreen(BaseScreen):
             config.set('gameplay.key_layout', selected_layout)
 
             custom_bindings = {}
-            for lane, input_widget in self.custom_binding_inputs.items():
-                raw = input_widget.text.strip().lower()
-                keys = [k.strip() for k in raw.split(',') if k.strip()]
-                keys = [k for k in keys if len(k) == 1]
-                custom_bindings[str(lane)] = keys
+            for lane, keys in self._pending_custom_bindings.items():
+                normalized = [k for k in keys if isinstance(k, str) and len(k) == 1]
+                custom_bindings[str(lane)] = normalized
             config.set('gameplay.key_bindings', custom_bindings)
 
             if self.game_engine and self.speed_slider:
@@ -414,9 +483,14 @@ class SettingsScreen(BaseScreen):
         self.parent.current = 'menu'
 
     def on_enter(self, *args):
+        Window.bind(on_key_down=self._on_capture_key_down)
         self.opacity = 0
         Animation(opacity=1, duration=0.3).start(self)
         self._apply_responsive_layout()
+
+    def on_leave(self, *args):
+        Window.unbind(on_key_down=self._on_capture_key_down)
+        self._capture_lane = None
 
     def on_window_resize(self, width, height):
         self._apply_responsive_layout()
