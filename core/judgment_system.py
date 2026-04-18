@@ -1,198 +1,177 @@
-# mystia_rhythm/core/judgment_system.py
-"""
-判定系统 - 修复KeyError
-"""
-import logging
-from typing import Dict, Optional
 from dataclasses import dataclass
 from enum import Enum
+import logging
+from typing import Dict, Optional, Any
 
 logger = logging.getLogger(__name__)
 
 
 class Judgment(Enum):
-    """判定等级"""
+    """Judgment tiers."""
+
     BEST = "BEST"
-    COOL = "COOL" 
+    COOL = "COOL"
     GOOD = "GOOD"
     MISS = "MISS"
 
 
 @dataclass
 class JudgmentResult:
-    """判定结果"""
+    """Single note judgment result."""
+
     judgment: Judgment
-    offset: float  # 偏移（毫秒）
+    offset: float
     score: int
     combo: int
     lane: Optional[int] = None
-    note: Optional[object] = None
+    note: Optional[Any] = None
+
+    # Backward compatibility for old code paths that still read/write time_diff.
+    @property
+    def time_diff(self) -> float:
+        return self.offset
+
+    @time_diff.setter
+    def time_diff(self, value: float) -> None:
+        self.offset = value
 
 
 class ScoreCalculator:
-    """分数计算器"""
-    
-    def __init__(self):
+    """Score and combo state accumulator."""
+
+    def __init__(self) -> None:
         self.total_notes = 0
         self.max_combo = 0
         self.current_combo = 0
         self.total_score = 0
         self.judgment_counts: Dict[str, int] = {
-            "BEST": 0,
-            "COOL": 0,
-            "GOOD": 0,
-            "MISS": 0
+            Judgment.BEST.value: 0,
+            Judgment.COOL.value: 0,
+            Judgment.GOOD.value: 0,
+            Judgment.MISS.value: 0,
         }
-        
+
+    def calculate_judgment(self, abs_offset_seconds: float) -> Judgment:
+        """Map absolute offset (seconds) to a judgment tier."""
+        abs_offset_ms = abs_offset_seconds * 1000.0
+
+        if abs_offset_ms <= 20:
+            return Judgment.BEST
+        if abs_offset_ms <= 35:
+            return Judgment.COOL
+        if abs_offset_ms <= 60:
+            return Judgment.GOOD
+        return Judgment.MISS
+
     def add_judgment(self, judgment: Judgment) -> JudgmentResult:
-        """添加判定"""
+        """Apply a new judgment to score/combo counters."""
         self.total_notes += 1
-        
-        # 更新连击
+
         if judgment == Judgment.MISS:
             self.current_combo = 0
+            score = 0
         else:
             self.current_combo += 1
             self.max_combo = max(self.max_combo, self.current_combo)
-            
-        # 计算分数
-        if judgment == Judgment.BEST:
-            score = 1000
-        elif judgment == Judgment.COOL:
-            score = 800
-        elif judgment == Judgment.GOOD:
-            score = 500
-        else:  # MISS
-            score = 0
-            
+            if judgment == Judgment.BEST:
+                score = 1000
+            elif judgment == Judgment.COOL:
+                score = 800
+            else:
+                score = 500
+
         self.total_score += score
-        
-        # 更新判定计数
         self.judgment_counts[judgment.value] += 1
-        
+
         return JudgmentResult(
             judgment=judgment,
             offset=0.0,
             score=score,
-            combo=self.current_combo
+            combo=self.current_combo,
         )
 
     def update_counts(self, judgment: Judgment) -> JudgmentResult:
-        """兼容旧接口，更新判定统计"""
+        """Backward-compatible alias."""
         return self.add_judgment(judgment)
-        
+
     def get_accuracy(self) -> float:
-        """计算准确率"""
+        """Return weighted accuracy in percent."""
         if self.total_notes == 0:
             return 100.0
-            
-        total_points = self.judgment_counts["BEST"] * 1.0 + \
-                      self.judgment_counts["COOL"] * 0.8 + \
-                      self.judgment_counts["GOOD"] * 0.5
-        max_points = self.total_notes * 1.0
-        
-        return (total_points / max_points) * 100.0
-        
+
+        total_points = (
+            self.judgment_counts[Judgment.BEST.value] * 1.0
+            + self.judgment_counts[Judgment.COOL.value] * 0.8
+            + self.judgment_counts[Judgment.GOOD.value] * 0.5
+        )
+        return (total_points / float(self.total_notes)) * 100.0
+
     def get_score(self) -> int:
-        """获取总分"""
         return self.total_score
-        
+
     def get_combo(self) -> int:
-        """获取当前连击"""
         return self.current_combo
-        
+
     def reset(self) -> None:
-        """重置计算器"""
         self.total_notes = 0
         self.max_combo = 0
         self.current_combo = 0
         self.total_score = 0
         self.judgment_counts = {
-            "BEST": 0,
-            "COOL": 0,
-            "GOOD": 0,
-            "MISS": 0
+            Judgment.BEST.value: 0,
+            Judgment.COOL.value: 0,
+            Judgment.GOOD.value: 0,
+            Judgment.MISS.value: 0,
         }
 
 
 class JudgmentSystem:
-    """判定系统"""
-    
-    def __init__(self):
+    """Gameplay judgment facade used by game engine."""
+
+    def __init__(self) -> None:
         self.calculator = ScoreCalculator()
         self.windows = {
-            "BEST": 20,   # ±20ms
-            "COOL": 35,   # ±35ms
-            "GOOD": 60,   # ±60ms
-            "MISS": 120   # ±120ms
+            Judgment.BEST.value: 20,
+            Judgment.COOL.value: 35,
+            Judgment.GOOD.value: 60,
+            Judgment.MISS.value: 120,
         }
-        self.judged_notes = {}
-        
-    def judge_note(self, note: None, current_time: float, note_time: float, is_auto_miss: bool = False) -> Optional[JudgmentResult]:
-        """
-        判定音符
-        
-        Args:
-            note: 音符
-            current_time: 当前时间
-            note_time: 音符时间
-            is_auto_miss: 是否为自动MISS
-            
-        # 创建判定结果
-        result = self.calculator.add_judgment(judgment)
-        result.offset = time_diff
-        if hasattr(note, "column"):
-            result.lane = note.column
-        
-        return result
-        Returns:
-            JudgmentResult对象，如果判定失败返回None
-        """
+        self.judged_notes: Dict[int, JudgmentResult] = {}
+
+    def judge_note(
+        self,
+        note: Optional[Any],
+        current_time: float,
+        note_time: float,
+        is_auto_miss: bool = False,
+    ) -> Optional[JudgmentResult]:
+        """Judge one note event and return a structured result."""
         try:
-            # 计算时间差
-            if note_time is None:
-                time_diff = 0.0
-            else:
-                time_diff = current_time - note_time
-            
-            # 确定判定等级
+            offset = 0.0 if note_time is None else (current_time - note_time)
+
             if is_auto_miss:
                 judgment = Judgment.MISS
             else:
-                judgment = self.calculator.calculate_judgment(abs(time_diff))
-            
-            # 更新统计
-            self.calculator.update_counts(judgment)
-            
-            # 创建结果
-            result = JudgmentResult(
-                judgment=judgment,
-                note=note,
-                time_diff=time_diff,
-                combo=self.get_combo(),
-                lane=note.column
-            )
-            
+                judgment = self.calculator.calculate_judgment(abs(offset))
+
+            result = self.calculator.add_judgment(judgment)
+            result.offset = offset
+            result.note = note
+            result.lane = note.column if hasattr(note, "column") else None
             return result
-        except Exception as e:
-            logger.error(f"判定音符时出错: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+        except Exception:
+            logger.exception("Error while judging note")
             return None
-        
+
     def get_accuracy(self) -> float:
-        """获取准确率"""
         return self.calculator.get_accuracy()
-        
+
     def get_score(self) -> int:
-        """获取分数"""
         return self.calculator.get_score()
-        
+
     def get_combo(self) -> int:
-        """获取连击"""
         return self.calculator.get_combo()
-        
+
     def reset(self) -> None:
-        """重置判定系统"""
         self.calculator.reset()
         self.judged_notes.clear()

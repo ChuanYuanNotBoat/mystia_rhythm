@@ -415,7 +415,8 @@ class GameEngine:
                     result = JudgmentResult(
                         judgment=Judgment.MISS,
                         note=note,
-                        time_diff=0,
+                        offset=0.0,
+                        score=0,
                         combo=self.judgment.get_combo(),
                         lane=note.column
                     )
