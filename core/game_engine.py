@@ -64,6 +64,7 @@ class GameEngine:
         self.current_time = 0.0
         self.is_playing = False
         self.keys_pressed = [False] * self.lanes
+        self._active_key_lanes: Dict[int, int] = {}
         
         # 音符数据
         self.notes: List[Note] = []
@@ -486,9 +487,13 @@ class GameEngine:
 
     def _on_key_up(self, window, key, scancode) -> bool:
         """Handle key up events."""
+        if key in self._active_key_lanes:
+            lane = self._active_key_lanes.pop(key)
+            self.handle_input(lane, False)
+            return True
+
         key_layout = config.get('gameplay.key_layout', 'standard')
         key_map = self._get_key_map(key_layout)
-
         for lane, keys in key_map.items():
             if key in keys:
                 self.handle_input(lane, False)
@@ -503,20 +508,19 @@ class GameEngine:
 
         for lane, keys in key_map.items():
             if key in keys:
+                self._active_key_lanes[key] = lane
                 return lane
 
         if not codepoint:
             return None
 
         c = codepoint.lower()
-        if key_layout == 'standard':
-            char_map = {'d': 0, 'f': 1, 'j': 2, 'k': 3}
-        elif key_layout == 'wasd':
-            char_map = {'a': 0, 'w': 1, 's': 2, 'd': 3}
-        else:
-            char_map = {}
+        char_map = self._get_char_map(key_layout)
+        lane = char_map.get(c)
+        if lane is not None:
+            self._active_key_lanes[key] = lane
 
-        return char_map.get(c)
+        return lane
 
     def _get_key_map(self, layout: str) -> Dict[int, List[int]]:
         """Return lane keycode mapping for current layout."""
@@ -547,6 +551,19 @@ class GameEngine:
                 3: [275],  # Right
             }
 
+        # Custom bindings from config
+        if layout == 'custom':
+            custom_codes: Dict[int, List[int]] = {}
+            custom_chars = self._get_custom_bindings_by_lane()
+            for lane in range(self.lanes):
+                lane_chars = custom_chars.get(lane, [])
+                keycodes: List[int] = []
+                for ch in lane_chars:
+                    if len(ch) == 1:
+                        keycodes.append(ord(ch.lower()))
+                custom_codes[lane] = keycodes
+            return custom_codes
+
         # Default to standard layout
         return {
             0: [100],
@@ -554,3 +571,50 @@ class GameEngine:
             2: [106],
             3: [107],
         }
+
+    def _get_char_map(self, layout: str) -> Dict[str, int]:
+        """Return character -> lane mapping for current layout."""
+        if layout == 'standard':
+            return {'d': 0, 'f': 1, 'j': 2, 'k': 3}
+        if layout == 'wasd':
+            return {'a': 0, 'w': 1, 's': 2, 'd': 3}
+        if layout == 'custom':
+            custom_chars = self._get_custom_bindings_by_lane()
+            char_map: Dict[str, int] = {}
+            for lane, chars in custom_chars.items():
+                for ch in chars:
+                    char_map[ch] = lane
+            return char_map
+        return {}
+
+    def _get_custom_bindings_by_lane(self) -> Dict[int, List[str]]:
+        """Return normalized custom bindings from config."""
+        raw = config.get('gameplay.key_bindings', {})
+        result: Dict[int, List[str]] = {lane: [] for lane in range(self.lanes)}
+
+        if isinstance(raw, dict):
+            for lane in range(self.lanes):
+                lane_keys = raw.get(str(lane), raw.get(lane, []))
+                if isinstance(lane_keys, str):
+                    lane_keys = [lane_keys]
+                if not isinstance(lane_keys, list):
+                    lane_keys = []
+
+                normalized: List[str] = []
+                for key_name in lane_keys:
+                    if not isinstance(key_name, str):
+                        continue
+                    key_name = key_name.strip().lower()
+                    if len(key_name) == 1:
+                        normalized.append(key_name)
+
+                if normalized:
+                    result[lane] = normalized
+
+        # Fallback to standard bindings when custom lane is empty
+        fallback = {0: ['d'], 1: ['f'], 2: ['j'], 3: ['k']}
+        for lane in range(self.lanes):
+            if not result[lane]:
+                result[lane] = fallback.get(lane, [])
+
+        return result

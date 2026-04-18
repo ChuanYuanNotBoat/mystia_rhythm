@@ -10,6 +10,7 @@ from kivy.uix.gridlayout import GridLayout
 from kivy.uix.image import Image
 from kivy.uix.slider import Slider
 from kivy.uix.togglebutton import ToggleButton
+from kivy.uix.textinput import TextInput
 from kivy.animation import Animation
 
 from .ui_base import BaseScreen, CustomButton, CustomLabel
@@ -31,6 +32,7 @@ class SettingsScreen(BaseScreen):
         self.latency_slider = None
         self.volume_slider = None
         self.key_layout_buttons = {}
+        self.custom_binding_inputs = {}
         
         self._create_ui()
         
@@ -186,7 +188,7 @@ class SettingsScreen(BaseScreen):
         
         key_layout_buttons = BoxLayout(orientation='horizontal', spacing=10)
         
-        layouts = ['standard', 'wasd', 'arrows']
+        layouts = ['standard', 'wasd', 'arrows', 'custom']
         current_layout = config.get('gameplay.key_layout', 'standard')
         
         for layout in layouts:
@@ -199,6 +201,42 @@ class SettingsScreen(BaseScreen):
             btn.bind(on_press=self._on_key_layout_change)
             self.key_layout_buttons[layout] = btn
             key_layout_buttons.add_widget(btn)
+
+        # 自定义键位绑定（每条轨道支持逗号分隔多个按键）
+        custom_bindings_label = CustomLabel(
+            text='自定义键位(1-4轨):',
+            font_size=20,
+            size_hint_x=0.3,
+            color=[1, 1, 1, 1]
+        )
+
+        custom_bindings_layout = GridLayout(cols=2, spacing=8)
+        saved_custom = config.get('gameplay.key_bindings', {})
+        lane_count = max(1, int(config.get('gameplay.lanes', 4)))
+        for lane in range(lane_count):
+            lane_label = CustomLabel(
+                text=f'轨道 {lane + 1}:',
+                font_size=16,
+                size_hint_x=0.35,
+                color=[1, 1, 1, 1]
+            )
+            default_value = ''
+            if isinstance(saved_custom, dict):
+                lane_keys = saved_custom.get(str(lane), saved_custom.get(lane, []))
+                if isinstance(lane_keys, list):
+                    default_value = ','.join([str(k) for k in lane_keys])
+                elif isinstance(lane_keys, str):
+                    default_value = lane_keys
+
+            lane_input = TextInput(
+                text=default_value,
+                multiline=False,
+                size_hint_x=0.65,
+                hint_text='例如: d,f',
+            )
+            self.custom_binding_inputs[lane] = lane_input
+            custom_bindings_layout.add_widget(lane_label)
+            custom_bindings_layout.add_widget(lane_input)
         
         # 添加设置项
         settings_layout.add_widget(speed_label)
@@ -211,6 +249,8 @@ class SettingsScreen(BaseScreen):
         settings_layout.add_widget(volume_slider_layout)
         settings_layout.add_widget(key_layout_label)
         settings_layout.add_widget(key_layout_buttons)
+        settings_layout.add_widget(custom_bindings_label)
+        settings_layout.add_widget(custom_bindings_layout)
         
         # 按钮区域
         button_layout = BoxLayout(orientation='horizontal', spacing=20, size_hint_y=0.2)
@@ -285,6 +325,16 @@ class SettingsScreen(BaseScreen):
                     selected_layout = layout
                     break
             config.set('gameplay.key_layout', selected_layout)
+
+            # 自定义键位
+            custom_bindings = {}
+            for lane, input_widget in self.custom_binding_inputs.items():
+                raw = input_widget.text.strip().lower()
+                keys = [k.strip() for k in raw.split(',') if k.strip()]
+                # 仅保留单字符按键，避免不兼容输入
+                keys = [k for k in keys if len(k) == 1]
+                custom_bindings[str(lane)] = keys
+            config.set('gameplay.key_bindings', custom_bindings)
             
             # 应用设置到游戏引擎
             if self.game_engine and self.speed_slider:

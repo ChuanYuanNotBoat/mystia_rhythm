@@ -57,6 +57,12 @@ class Config:
             'scroll_speed': 2.0,
             'note_size': 1.0,
             'key_layout': 'standard',
+            'key_bindings': {
+                '0': ['d'],
+                '1': ['f'],
+                '2': ['j'],
+                '3': ['k'],
+            },
             'lanes': 4,
         },
         'mods': {
