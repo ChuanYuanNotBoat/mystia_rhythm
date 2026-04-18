@@ -464,10 +464,12 @@ class GameEngine:
 
     def _on_key_down(self, window, key, scancode, codepoint, modifiers) -> bool:
         """Handle key down events."""
-        lane = self._resolve_lane_from_key_down(key, codepoint)
-        if lane is not None:
-            self.handle_input(lane, True)
-            return True
+        # Only consume gameplay lane keys while actually playing.
+        if self.state == GameState.PLAYING:
+            lane = self._resolve_lane_from_key_down(key, codepoint)
+            if lane is not None:
+                self.handle_input(lane, True)
+                return True
 
         if key == 27:  # ESC
             if self.state == GameState.PLAYING:
@@ -487,6 +489,10 @@ class GameEngine:
 
     def _on_key_up(self, window, key, scancode) -> bool:
         """Handle key up events."""
+        if self.state != GameState.PLAYING:
+            self._active_key_lanes.pop(key, None)
+            return False
+
         if key in self._active_key_lanes:
             lane = self._active_key_lanes.pop(key)
             self.handle_input(lane, False)
