@@ -1,109 +1,55 @@
-# Python
+# Python cache / bytecode
+__pycache__/
 *.py[cod]
 *$py.class
-*.so
-.Python
+
+# Build artifacts
 build/
-develop-eggs/
 dist/
-downloads/
-eggs/
 .eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
 MANIFEST
 
-# PyInstaller
-*.manifest
-*.spec
+# Virtual environments
+.env
+.venv/
+venv/
+ENV/
+env/
 
-# Unit test / coverage reports
-htmlcov/
+# Test / type-check caches
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
 .tox/
 .nox/
 .coverage
 .coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py,cover
-.hypothesis/
-.pytest_cache/
-cover/
+htmlcov/
 
-# Environments
-.env
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-
-# Spyder project settings
-.spyderproject
-.spyproject
-
-# Rope project settings
-.ropeproject
-
-# mkdocs documentation
-/site
-
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-# Pyre type checker
-.pyre/
-
-# PyCharm
+# IDE / editor
 .idea/
-
-# VS Code
 .vscode/
 *.code-workspace
 
-# Sublime Text
-*.sublime-*
-
-# OS generated files
+# OS junk
 .DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Windows
 Thumbs.db
 Desktop.ini
 
-# Log files
+# Logs
 logs/
 *.log
 
-# Project specific ignores
-# 数据文件夹（用户数据、缓存、谱面等）
+# Runtime project data (keep directory skeleton only)
+data/config.json
 data/beatmaps/**
 data/cache/**
 data/saves/**
 data/scores/**
 data/mods/**
 data/skins/**
-
-# 但是保留目录结构（如果需要保留空文件夹，可以在目录中放一个 .gitkeep 文件）
 !data/beatmaps/.gitkeep
 !data/cache/.gitkeep
 !data/saves/.gitkeep
@@ -111,30 +57,23 @@ data/skins/**
 !data/mods/.gitkeep
 !data/skins/.gitkeep
 
-# 第三方库
+# Third-party local drops
 third_party/
 
-# 临时文件
-*.tmp
-*.temp
-
-# 配置文件（可以提交示例配置）
-config.json
-!config.example.json
-
-# 音频/图像缓存或临时文件
+# Local media/runtime assets
 *.mp3
 *.wav
 *.ogg
 *.jpg
+*.jpeg
 *.png
 *.bmp
 *.gif
 
-# 排除 assets 下的生成文件（如果需要）
-assets/images/notes/
-assets/sounds/
+# Temp files
+*.tmp
+*.temp
 
-# 开发环境配置
-.config/
-.settings/
+# Local config override samples
+config.json
+!config.example.json

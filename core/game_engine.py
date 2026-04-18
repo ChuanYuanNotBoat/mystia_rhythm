@@ -3,18 +3,14 @@
 游戏引擎主循环 - 修复判定和按键处理
 """
 import logging
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Callable
 from enum import Enum
-import threading
-import time
 from pathlib import Path
 
 from kivy.app import App
-from kivy.clock import Clock
 from kivy.core.window import Window
-from kivy.uix.widget import Widget
 
-from .timing import GameClock, TimingSystem
+from .timing import GameClock
 from .audio_manager import AudioManager
 from .chart_parser import Chart, Note, NoteType
 from .judgment_system import JudgmentSystem, Judgment, JudgmentResult
@@ -68,12 +64,19 @@ class GameEngine:
         self.current_time = 0.0
         self.is_playing = False
         self.keys_pressed = [False] * self.lanes
+        self._active_key_lanes: Dict[int, int] = {}
         
         # 音符数据
         self.notes: List[Note] = []
-        self.note_times: List[float] = []  # 每个音符的时间
-        self.note_positions: List[float] = []  # 每个音符的屏幕位置
-        self.hold_notes: Dict[int, Dict] = {} 
+        self.note_times: List[float] = []
+        self.note_positions: List[float] = []
+        self.hold_notes: Dict[int, Dict] = {}
+
+        # Note scan caches (for performance)
+        self.note_order_by_time: List[int] = []
+        self.miss_scan_cursor = 0
+        self.lane_note_indices: Dict[int, List[int]] = {lane: [] for lane in range(self.lanes)}
+        self.lane_scan_cursors: Dict[int, int] = {lane: 0 for lane in range(self.lanes)}
         # 回调函数
         self.callbacks: Dict[str, List[Callable]] = {
             'on_note_hit': [],
@@ -101,52 +104,60 @@ class GameEngine:
         logger.debug(f"游戏参数 - 轨道: {self.lanes}, 滚动速度: {self.scroll_speed}, 音符大小: {self.note_size}")
         
     def load_chart(self, chart: Chart) -> bool:
-        """加载谱面"""
-        logger.info(f"加载谱面: {chart.metadata.title} - {chart.metadata.artist}")
-        logger.debug(f"音符数量: {len(chart.notes)}")
-        
+        """Load chart and prebuild note scan indices."""
+        logger.info(f"Loading chart: {chart.metadata.title} - {chart.metadata.artist}")
+        logger.debug(f"Note count: {len(chart.notes)}")
+
         self.current_chart = chart
         self.notes = chart.notes
-        
-        # 计算每个音符的时间
+
         self.note_times = []
         self.note_positions = []
-        
+
         for note in self.notes:
             note_time = chart.timing_system.beat_to_time(note.beat)
             self.note_times.append(note_time)
-            
-            # 如果是长按，也计算结束时间
+
             if note.endbeat:
                 end_time = chart.timing_system.beat_to_time(note.endbeat)
                 note.duration = end_time - note_time
             else:
                 note.duration = 0.0
-                
-        # 重置游戏状态
+
+        # Build note scan indices once per chart load.
+        self.note_order_by_time = sorted(
+            range(len(self.notes)),
+            key=lambda i: self.note_times[i] if self.note_times[i] is not None else float('inf'),
+        )
+        self.lane_note_indices = {lane: [] for lane in range(self.lanes)}
+        for idx, note in enumerate(self.notes):
+            if 0 <= note.column < self.lanes:
+                self.lane_note_indices[note.column].append(idx)
+
         self.reset_game()
-        
-        # 加载音频
+
         if chart.metadata.audio_path:
-            logger.debug(f"音频文件: {chart.metadata.audio_path}")
+            logger.debug(f"Audio file: {chart.metadata.audio_path}")
             audio_loaded = self.audio.load_music(chart.metadata.audio_path)
             if not audio_loaded:
-                logger.warning(f"音频加载失败: {chart.metadata.audio_path}")
-                
-        logger.info(f"谱面加载完成")
+                logger.warning(f"Audio load failed: {chart.metadata.audio_path}")
+
+        logger.info("Chart loaded")
         return True
-        
+
     def reset_game(self) -> None:
-        """重置游戏状态"""
-        logger.info("重置游戏状态")
+        """Reset gameplay state."""
+        logger.info("Reset game state")
         self.current_time = 0.0
         self.is_playing = False
         self.keys_pressed = [False] * self.lanes
         self.judgment.reset()
-        
-        # 重置时钟
+
+        self.miss_scan_cursor = 0
+        self.lane_scan_cursors = {lane: 0 for lane in range(self.lanes)}
+
         self.clock.reset()
-        
+
     def start_game(self) -> None:
         """开始游戏"""
         logger.info("游戏开始")
@@ -237,7 +248,10 @@ class GameEngine:
         # 切换到结算界面
         if hasattr(self, 'app') and self.app and hasattr(self.app, 'screen_manager'):
             logger.info("切换到结算界面")
-            self.app.screen_manager.current = 'result'
+            try:
+                self.app.screen_manager.current = 'result'
+            except Exception as e:
+                logger.error(f"Failed to switch to result screen: {e}")
         else:
             logger.error("无法切换到结算界面：screen_manager 不可用")
             
@@ -264,39 +278,45 @@ class GameEngine:
         
         # 更新UI
         if self.play_ui:
-            self.play_ui.update(self.current_time)
+            try:
+                self.play_ui.update(self.current_time)
+            except Exception as e:
+                logger.error(f"PlayUI update failed: {e}")
             
     def _update_notes(self) -> None:
-        """更新音符状态"""
+        """Update notes with cursor-based scan (avoid full scan each frame)."""
         if not self.current_chart:
             return
-            
+
         current_time = self.current_time
         judgment_window = 0.12
-        
-        # 检查每个音符
-        for i, note in enumerate(self.notes):
-            note_time = self.note_times[i]
-            
-            # 检查时间是否有效
-            if note_time is None:
+        judged_notes = self.judgment.judged_notes
+
+        while self.miss_scan_cursor < len(self.note_order_by_time):
+            note_idx = self.note_order_by_time[self.miss_scan_cursor]
+
+            if note_idx in judged_notes:
+                self.miss_scan_cursor += 1
                 continue
-                
-            # 如果音符已经经过判定窗口，自动判定为MISS
-            if current_time > note_time + judgment_window and i not in self.judgment.judged_notes:
-                # 自动MISS
-                result = self.judgment.judge_note(note, current_time, note_time, True)
-                if result:
-                    self.judgment.judged_notes[i] = result
-                    
-                    # 触发回调
-                    try:
-                        self._trigger_callbacks('on_note_miss', result)
-                        self._trigger_callbacks('on_combo_change', self.judgment.get_combo())
-                        self._trigger_callbacks('on_score_change', self.judgment.get_score())
-                    except Exception as e:
-                        logger.error(f"触发回调失败: {e}")
-                        
+
+            note_time = self.note_times[note_idx]
+            if note_time is None:
+                self.miss_scan_cursor += 1
+                continue
+
+            if current_time <= note_time + judgment_window:
+                break
+
+            note = self.notes[note_idx]
+            result = self.judgment.judge_note(note, current_time, note_time, True)
+            if result:
+                judged_notes[note_idx] = result
+                self._trigger_callbacks('on_note_miss', result)
+                self._trigger_callbacks('on_combo_change', self.judgment.get_combo())
+                self._trigger_callbacks('on_score_change', self.judgment.get_score())
+
+            self.miss_scan_cursor += 1
+
     def handle_input(self, lane: int, pressed: bool) -> None:
         """
         处理输入
@@ -319,54 +339,63 @@ class GameEngine:
             self._check_note_hit(lane)
             
     def _check_note_hit(self, lane: int) -> None:
-        """检查指定轨道上的音符命中"""
+        """Check hit on lane with cursor-based scan."""
         if not self.current_chart:
             return
-            
+
         current_time = self.current_time
         judgment_window = 0.12
-        
-        # 查找在判定窗口内的音符
-        for i, note in enumerate(self.notes):
-            # 只检查指定轨道的音符
-            if note.column != lane:
+        judged_notes = self.judgment.judged_notes
+
+        lane_notes = self.lane_note_indices.get(lane, [])
+        cursor = self.lane_scan_cursors.get(lane, 0)
+
+        while cursor < len(lane_notes):
+            note_idx = lane_notes[cursor]
+
+            if note_idx in judged_notes:
+                cursor += 1
                 continue
-                
-            # 跳过已判定的音符
-            if i in self.judgment.judged_notes:
-                continue
-                
-            note_time = self.note_times[i]
+
+            note_time = self.note_times[note_idx]
             if note_time is None:
+                cursor += 1
                 continue
-                
-            time_diff = abs(current_time - note_time)
-            
-            # 如果在判定窗口内
-            if time_diff <= judgment_window:
-                # 进行判定
-                result = self.judgment.judge_note(note, current_time, note_time, True)
-                if result:
-                    self.judgment.judged_notes[i] = result
-                    
-                    # 如果是长按音符，开始追踪
-                    if note.type == NoteType.HOLD:
-                        self.hold_notes[i] = {
-                            'note': note,
-                            'start_time': current_time,
-                            'pressed': True
-                        }
-                    
-                    # 触发回调
-                    self._trigger_callbacks('on_note_hit', result)
-                    self._trigger_callbacks('on_combo_change', self.judgment.get_combo())
-                    self._trigger_callbacks('on_score_change', self.judgment.get_score())
-                    
-                    # 播放判定音效
-                    if note.sound:
-                        self.audio.play_sound(note.sound, note.volume)
-                    break
-                    
+
+            # Too late for this note, move cursor forward.
+            if current_time > note_time + judgment_window:
+                cursor += 1
+                continue
+
+            # Next note has not reached judgment window yet.
+            if current_time < note_time - judgment_window:
+                break
+
+            note = self.notes[note_idx]
+            result = self.judgment.judge_note(note, current_time, note_time, False)
+            if result:
+                judged_notes[note_idx] = result
+                if note.type == NoteType.HOLD:
+                    self.hold_notes[note_idx] = {
+                        'note': note,
+                        'start_time': current_time,
+                        'pressed': True,
+                    }
+
+                self._trigger_callbacks('on_note_hit', result)
+                self._trigger_callbacks('on_combo_change', self.judgment.get_combo())
+                self._trigger_callbacks('on_score_change', self.judgment.get_score())
+
+                if note.sound:
+                    self.audio.play_sound(note.sound, note.volume)
+
+                cursor += 1
+                break
+
+            break
+
+        self.lane_scan_cursors[lane] = cursor
+
     def _check_hold_release(self, lane: int) -> None:
         """检查长按音符释放"""
         current_time = self.current_time
@@ -387,7 +416,8 @@ class GameEngine:
                     result = JudgmentResult(
                         judgment=Judgment.MISS,
                         note=note,
-                        time_diff=0,
+                        offset=0.0,
+                        score=0,
                         combo=self.judgment.get_combo(),
                         lane=note.column
                     )
@@ -404,47 +434,6 @@ class GameEngine:
                     # 移除追踪
                     self.hold_notes.pop(note_idx, None)
             
-    def _check_note_hit(self, lane: int) -> None:
-        """检查指定轨道上的音符命中"""
-        if not self.current_chart:
-            return
-            
-        current_time = self.current_time
-        judgment_window = 0.12  # 120ms转换为秒
-        
-        # 查找在判定窗口内的音符
-        for i, note in enumerate(self.notes):
-            # 只检查指定轨道的音符
-            if note.column != lane:
-                continue
-                
-            # 跳过已判定的音符
-            if i in self.judgment.judged_notes:
-                continue
-                
-            note_time = self.note_times[i]
-            if note_time is None:
-                continue
-                
-            time_diff = abs(current_time - note_time)
-            
-            # 如果在判定窗口内
-            if time_diff <= judgment_window:
-                # 进行判定
-                result = self.judgment.judge_note(note, current_time, note_time, True)
-                if result:
-                    self.judgment.judged_notes[i] = result
-                    
-                    # 触发回调
-                    self._trigger_callbacks('on_note_hit', result)
-                    self._trigger_callbacks('on_combo_change', self.judgment.get_combo())
-                    self._trigger_callbacks('on_score_change', self.judgment.get_score())
-                    
-                    # 播放判定音效
-                    if note.sound:
-                        self.audio.play_sound(note.sound, note.volume)
-                    break
-                    
     def change_state(self, new_state: GameState) -> None:
         """改变游戏状态"""
         old_state = self.state
@@ -465,58 +454,77 @@ class GameEngine:
                 self.callbacks[event].remove(callback)
                 
     def _trigger_callbacks(self, event: str, *args, **kwargs) -> None:
-        """触发回调函数"""
+        """Trigger registered callbacks for a given event."""
         if event in self.callbacks:
             for callback in self.callbacks[event]:
                 try:
                     callback(*args, **kwargs)
-                except Exception as e:
-                    logger.error(f"回调函数执行失败 {event}: {e}")
-                    
+                except Exception:
+                    logger.exception(f"Callback execution failed: {event}")
+
     def _on_key_down(self, window, key, scancode, codepoint, modifiers) -> bool:
-        """处理键盘按下事件"""
-        # 获取键位映射
-        key_layout = config.get('gameplay.key_layout', 'standard')
-        key_map = self._get_key_map(key_layout)
-        
-        # 检查是否按下对应轨道的键
-        for lane, keys in key_map.items():
-            if key in keys:
-                self.handle_input(lane, True)
-                return True
-                
-        # 其他功能键
+        """Handle key down events."""
+        lane = self._resolve_lane_from_key_down(key, codepoint)
+        if lane is not None:
+            self.handle_input(lane, True)
+            return True
+
         if key == 27:  # ESC
             if self.state == GameState.PLAYING:
                 self.pause_game()
             elif self.state == GameState.PAUSED:
                 self.resume_game()
             return True
-            
-        elif key == 32:  # 空格
+
+        if key == 32:  # SPACE
             if self.state == GameState.PLAYING:
                 self.pause_game()
             elif self.state == GameState.PAUSED:
                 self.resume_game()
             return True
-            
+
         return False
-        
+
     def _on_key_up(self, window, key, scancode) -> bool:
-        """处理键盘释放事件"""
+        """Handle key up events."""
+        if key in self._active_key_lanes:
+            lane = self._active_key_lanes.pop(key)
+            self.handle_input(lane, False)
+            return True
+
         key_layout = config.get('gameplay.key_layout', 'standard')
         key_map = self._get_key_map(key_layout)
-        
         for lane, keys in key_map.items():
             if key in keys:
                 self.handle_input(lane, False)
                 return True
-                
+
         return False
-        
+
+    def _resolve_lane_from_key_down(self, key: int, codepoint: str) -> Optional[int]:
+        """Resolve lane from key-down event using keycode + codepoint fallback."""
+        key_layout = config.get('gameplay.key_layout', 'standard')
+        key_map = self._get_key_map(key_layout)
+
+        for lane, keys in key_map.items():
+            if key in keys:
+                self._active_key_lanes[key] = lane
+                return lane
+
+        if not codepoint:
+            return None
+
+        c = codepoint.lower()
+        char_map = self._get_char_map(key_layout)
+        lane = char_map.get(c)
+        if lane is not None:
+            self._active_key_lanes[key] = lane
+
+        return lane
+
     def _get_key_map(self, layout: str) -> Dict[int, List[int]]:
-        """获取键位映射"""
-        # 标准键位：DFJK
+        """Return lane keycode mapping for current layout."""
+        # Standard: D F J K
         if layout == 'standard':
             return {
                 0: [100],  # D
@@ -524,26 +532,89 @@ class GameEngine:
                 2: [106],  # J
                 3: [107],  # K
             }
+
         # WASD
-        elif layout == 'wasd':
+        if layout == 'wasd':
             return {
                 0: [97],   # A
                 1: [119],  # W
                 2: [115],  # S
                 3: [100],  # D
             }
-        # 方向键
-        elif layout == 'arrows':
+
+        # Arrow keys
+        if layout == 'arrows':
             return {
-                0: [276],  # 左
-                1: [273],  # 上
-                2: [274],  # 下
-                3: [275],  # 右
+                0: [276],  # Left
+                1: [273],  # Up
+                2: [274],  # Down
+                3: [275],  # Right
             }
-        # 默认返回标准键位
+
+        # Custom bindings from config
+        if layout == 'custom':
+            custom_codes: Dict[int, List[int]] = {}
+            custom_chars = self._get_custom_bindings_by_lane()
+            for lane in range(self.lanes):
+                lane_chars = custom_chars.get(lane, [])
+                keycodes: List[int] = []
+                for ch in lane_chars:
+                    if len(ch) == 1:
+                        keycodes.append(ord(ch.lower()))
+                custom_codes[lane] = keycodes
+            return custom_codes
+
+        # Default to standard layout
         return {
             0: [100],
             1: [102],
             2: [106],
             3: [107],
         }
+
+    def _get_char_map(self, layout: str) -> Dict[str, int]:
+        """Return character -> lane mapping for current layout."""
+        if layout == 'standard':
+            return {'d': 0, 'f': 1, 'j': 2, 'k': 3}
+        if layout == 'wasd':
+            return {'a': 0, 'w': 1, 's': 2, 'd': 3}
+        if layout == 'custom':
+            custom_chars = self._get_custom_bindings_by_lane()
+            char_map: Dict[str, int] = {}
+            for lane, chars in custom_chars.items():
+                for ch in chars:
+                    char_map[ch] = lane
+            return char_map
+        return {}
+
+    def _get_custom_bindings_by_lane(self) -> Dict[int, List[str]]:
+        """Return normalized custom bindings from config."""
+        raw = config.get('gameplay.key_bindings', {})
+        result: Dict[int, List[str]] = {lane: [] for lane in range(self.lanes)}
+
+        if isinstance(raw, dict):
+            for lane in range(self.lanes):
+                lane_keys = raw.get(str(lane), raw.get(lane, []))
+                if isinstance(lane_keys, str):
+                    lane_keys = [lane_keys]
+                if not isinstance(lane_keys, list):
+                    lane_keys = []
+
+                normalized: List[str] = []
+                for key_name in lane_keys:
+                    if not isinstance(key_name, str):
+                        continue
+                    key_name = key_name.strip().lower()
+                    if len(key_name) == 1:
+                        normalized.append(key_name)
+
+                if normalized:
+                    result[lane] = normalized
+
+        # Fallback to standard bindings when custom lane is empty
+        fallback = {0: ['d'], 1: ['f'], 2: ['j'], 3: ['k']}
+        for lane in range(self.lanes):
+            if not result[lane]:
+                result[lane] = fallback.get(lane, [])
+
+        return result
