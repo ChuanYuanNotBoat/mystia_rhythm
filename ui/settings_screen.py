@@ -463,6 +463,14 @@ class SettingsScreen(BaseScreen):
         if len(c) == 1:
             return c
 
+        # Kivy keycode name fallback (works better under IME layouts).
+        try:
+            key_name = (Window.keycode_to_string(key) or '').strip().lower()
+        except Exception:
+            key_name = ''
+        if len(key_name) == 1:
+            return key_name
+
         # Fallback for platforms where codepoint may be empty on key events.
         if isinstance(key, int) and 32 <= key <= 126:
             return chr(key).lower()
