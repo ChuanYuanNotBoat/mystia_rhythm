@@ -426,15 +426,14 @@ class SettingsScreen(BaseScreen):
             self._refresh_binding_button(lane)
             return True
 
-        c = (codepoint or '').strip().lower()
-        if len(c) != 1:
+        c = self._normalize_capture_char(key, codepoint)
+        if c is None:
             # unsupported key for custom mapping
             lane = self._capture_lane
             self._capture_lane = None
             btn = self.custom_binding_buttons.get(lane)
             if btn:
                 btn.text = 'Unsupported key'
-                self._refresh_binding_button(lane)
             return True
 
         lane = self._capture_lane
@@ -442,6 +441,18 @@ class SettingsScreen(BaseScreen):
         self._capture_lane = None
         self._refresh_binding_button(lane)
         return True
+
+    def _normalize_capture_char(self, key: int, codepoint: str):
+        """Return a single-character binding token, or None when unsupported."""
+        c = (codepoint or '').strip().lower()
+        if len(c) == 1:
+            return c
+
+        # Fallback for platforms where codepoint may be empty on key events.
+        if isinstance(key, int) and 32 <= key <= 126:
+            return chr(key).lower()
+
+        return None
 
     def _on_save(self, *args):
         logger.info("Saving settings")
