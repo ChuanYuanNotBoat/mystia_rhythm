@@ -45,6 +45,9 @@ class GameEngine:
         
         # 时间系统
         self.clock = GameClock()
+        # Compensate timeline using configured audio latency.
+        # Positive latency means audio is perceived later, so gameplay time should be shifted earlier.
+        self.clock.audio_offset = -float(config.get('audio.audio_latency', 0.05))
         
         # 音频系统
         self.audio = AudioManager(config)
@@ -265,7 +268,7 @@ class GameEngine:
             return
             
         # 更新当前时间
-        self.current_time = self.clock.game_time
+        self.current_time = max(0.0, self.clock.get_audio_time())
         
         # 检查游戏是否应该结束（音乐播放完毕）
         if self.current_chart and self.current_chart.metadata.duration:
