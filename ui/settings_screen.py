@@ -442,6 +442,21 @@ class SettingsScreen(BaseScreen):
         self._refresh_binding_button(lane)
         return True
 
+    def _on_capture_textinput(self, window, text):
+        """Capture text input for binding on platforms where codepoint/key are unreliable."""
+        if self._capture_lane is None:
+            return False
+
+        c = (text or '').strip().lower()
+        if len(c) != 1:
+            return False
+
+        lane = self._capture_lane
+        self._pending_custom_bindings[lane] = [c]
+        self._capture_lane = None
+        self._refresh_binding_button(lane)
+        return True
+
     def _normalize_capture_char(self, key: int, codepoint: str):
         """Return a single-character binding token, or None when unsupported."""
         c = (codepoint or '').strip().lower()
@@ -505,12 +520,14 @@ class SettingsScreen(BaseScreen):
 
     def on_enter(self, *args):
         Window.bind(on_key_down=self._on_capture_key_down)
+        Window.bind(on_textinput=self._on_capture_textinput)
         self.opacity = 0
         Animation(opacity=1, duration=0.3).start(self)
         self._apply_responsive_layout()
 
     def on_leave(self, *args):
         Window.unbind(on_key_down=self._on_capture_key_down)
+        Window.unbind(on_textinput=self._on_capture_textinput)
         self._capture_lane = None
 
     def on_window_resize(self, width, height):
