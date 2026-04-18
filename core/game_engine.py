@@ -371,7 +371,7 @@ class GameEngine:
                 break
 
             note = self.notes[note_idx]
-            result = self.judgment.judge_note(note, current_time, note_time, True)
+            result = self.judgment.judge_note(note, current_time, note_time, False)
             if result:
                 judged_notes[note_idx] = result
                 if note.type == NoteType.HOLD:
@@ -462,49 +462,65 @@ class GameEngine:
                     logger.exception(f"Callback execution failed: {event}")
 
     def _on_key_down(self, window, key, scancode, codepoint, modifiers) -> bool:
-        """处理键盘按下事件"""
-        # 获取键位映射
-        key_layout = config.get('gameplay.key_layout', 'standard')
-        key_map = self._get_key_map(key_layout)
-        
-        # 检查是否按下对应轨道的键
-        for lane, keys in key_map.items():
-            if key in keys:
-                self.handle_input(lane, True)
-                return True
-                
-        # 其他功能键
+        """Handle key down events."""
+        lane = self._resolve_lane_from_key_down(key, codepoint)
+        if lane is not None:
+            self.handle_input(lane, True)
+            return True
+
         if key == 27:  # ESC
             if self.state == GameState.PLAYING:
                 self.pause_game()
             elif self.state == GameState.PAUSED:
                 self.resume_game()
             return True
-            
-        elif key == 32:  # 空格
+
+        if key == 32:  # SPACE
             if self.state == GameState.PLAYING:
                 self.pause_game()
             elif self.state == GameState.PAUSED:
                 self.resume_game()
             return True
-            
+
         return False
-        
+
     def _on_key_up(self, window, key, scancode) -> bool:
-        """处理键盘释放事件"""
+        """Handle key up events."""
         key_layout = config.get('gameplay.key_layout', 'standard')
         key_map = self._get_key_map(key_layout)
-        
+
         for lane, keys in key_map.items():
             if key in keys:
                 self.handle_input(lane, False)
                 return True
-                
+
         return False
-        
+
+    def _resolve_lane_from_key_down(self, key: int, codepoint: str) -> Optional[int]:
+        """Resolve lane from key-down event using keycode + codepoint fallback."""
+        key_layout = config.get('gameplay.key_layout', 'standard')
+        key_map = self._get_key_map(key_layout)
+
+        for lane, keys in key_map.items():
+            if key in keys:
+                return lane
+
+        if not codepoint:
+            return None
+
+        c = codepoint.lower()
+        if key_layout == 'standard':
+            char_map = {'d': 0, 'f': 1, 'j': 2, 'k': 3}
+        elif key_layout == 'wasd':
+            char_map = {'a': 0, 'w': 1, 's': 2, 'd': 3}
+        else:
+            char_map = {}
+
+        return char_map.get(c)
+
     def _get_key_map(self, layout: str) -> Dict[int, List[int]]:
-        """获取键位映射"""
-        # 标准键位：DFJK
+        """Return lane keycode mapping for current layout."""
+        # Standard: D F J K
         if layout == 'standard':
             return {
                 0: [100],  # D
@@ -512,23 +528,26 @@ class GameEngine:
                 2: [106],  # J
                 3: [107],  # K
             }
+
         # WASD
-        elif layout == 'wasd':
+        if layout == 'wasd':
             return {
                 0: [97],   # A
                 1: [119],  # W
                 2: [115],  # S
                 3: [100],  # D
             }
-        # 方向键
-        elif layout == 'arrows':
+
+        # Arrow keys
+        if layout == 'arrows':
             return {
-                0: [276],  # 左
-                1: [273],  # 上
-                2: [274],  # 下
-                3: [275],  # 右
+                0: [276],  # Left
+                1: [273],  # Up
+                2: [274],  # Down
+                3: [275],  # Right
             }
-        # 默认返回标准键位
+
+        # Default to standard layout
         return {
             0: [100],
             1: [102],
