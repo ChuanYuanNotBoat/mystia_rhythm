@@ -517,16 +517,36 @@ class GameEngine:
                 self._active_key_lanes[key] = lane
                 return lane
 
-        if not codepoint:
+        c = self._normalize_input_char(key, codepoint)
+        if c is None:
             return None
 
-        c = codepoint.lower()
         char_map = self._get_char_map(key_layout)
         lane = char_map.get(c)
         if lane is not None:
             self._active_key_lanes[key] = lane
 
         return lane
+
+    def _normalize_input_char(self, key: int, codepoint: str) -> Optional[str]:
+        """Normalize key event to a single lowercase character when possible."""
+        c = (codepoint or '').strip().lower()
+        if len(c) == 1:
+            return c
+
+        # IME/layout fallback via Kivy key name.
+        try:
+            key_name = (Window.keycode_to_string(key) or '').strip().lower()
+        except Exception:
+            key_name = ''
+        if len(key_name) == 1:
+            return key_name
+
+        # Raw ASCII keycode fallback.
+        if isinstance(key, int) and 32 <= key <= 126:
+            return chr(key).lower()
+
+        return None
 
     def _get_key_map(self, layout: str) -> Dict[int, List[int]]:
         """Return lane keycode mapping for current layout."""
