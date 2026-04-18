@@ -3,18 +3,14 @@
 游戏引擎主循环 - 修复判定和按键处理
 """
 import logging
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Callable
 from enum import Enum
-import threading
-import time
 from pathlib import Path
 
 from kivy.app import App
-from kivy.clock import Clock
 from kivy.core.window import Window
-from kivy.uix.widget import Widget
 
-from .timing import GameClock, TimingSystem
+from .timing import GameClock
 from .audio_manager import AudioManager
 from .chart_parser import Chart, Note, NoteType
 from .judgment_system import JudgmentSystem, Judgment, JudgmentResult
@@ -71,9 +67,15 @@ class GameEngine:
         
         # 音符数据
         self.notes: List[Note] = []
-        self.note_times: List[float] = []  # 每个音符的时间
-        self.note_positions: List[float] = []  # 每个音符的屏幕位置
-        self.hold_notes: Dict[int, Dict] = {} 
+        self.note_times: List[float] = []
+        self.note_positions: List[float] = []
+        self.hold_notes: Dict[int, Dict] = {}
+
+        # Note scan caches (for performance)
+        self.note_order_by_time: List[int] = []
+        self.miss_scan_cursor = 0
+        self.lane_note_indices: Dict[int, List[int]] = {lane: [] for lane in range(self.lanes)}
+        self.lane_scan_cursors: Dict[int, int] = {lane: 0 for lane in range(self.lanes)}
         # 回调函数
         self.callbacks: Dict[str, List[Callable]] = {
             'on_note_hit': [],
@@ -101,52 +103,60 @@ class GameEngine:
         logger.debug(f"游戏参数 - 轨道: {self.lanes}, 滚动速度: {self.scroll_speed}, 音符大小: {self.note_size}")
         
     def load_chart(self, chart: Chart) -> bool:
-        """加载谱面"""
-        logger.info(f"加载谱面: {chart.metadata.title} - {chart.metadata.artist}")
-        logger.debug(f"音符数量: {len(chart.notes)}")
-        
+        """Load chart and prebuild note scan indices."""
+        logger.info(f"Loading chart: {chart.metadata.title} - {chart.metadata.artist}")
+        logger.debug(f"Note count: {len(chart.notes)}")
+
         self.current_chart = chart
         self.notes = chart.notes
-        
-        # 计算每个音符的时间
+
         self.note_times = []
         self.note_positions = []
-        
+
         for note in self.notes:
             note_time = chart.timing_system.beat_to_time(note.beat)
             self.note_times.append(note_time)
-            
-            # 如果是长按，也计算结束时间
+
             if note.endbeat:
                 end_time = chart.timing_system.beat_to_time(note.endbeat)
                 note.duration = end_time - note_time
             else:
                 note.duration = 0.0
-                
-        # 重置游戏状态
+
+        # Build note scan indices once per chart load.
+        self.note_order_by_time = sorted(
+            range(len(self.notes)),
+            key=lambda i: self.note_times[i] if self.note_times[i] is not None else float('inf'),
+        )
+        self.lane_note_indices = {lane: [] for lane in range(self.lanes)}
+        for idx, note in enumerate(self.notes):
+            if 0 <= note.column < self.lanes:
+                self.lane_note_indices[note.column].append(idx)
+
         self.reset_game()
-        
-        # 加载音频
+
         if chart.metadata.audio_path:
-            logger.debug(f"音频文件: {chart.metadata.audio_path}")
+            logger.debug(f"Audio file: {chart.metadata.audio_path}")
             audio_loaded = self.audio.load_music(chart.metadata.audio_path)
             if not audio_loaded:
-                logger.warning(f"音频加载失败: {chart.metadata.audio_path}")
-                
-        logger.info(f"谱面加载完成")
+                logger.warning(f"Audio load failed: {chart.metadata.audio_path}")
+
+        logger.info("Chart loaded")
         return True
-        
+
     def reset_game(self) -> None:
-        """重置游戏状态"""
-        logger.info("重置游戏状态")
+        """Reset gameplay state."""
+        logger.info("Reset game state")
         self.current_time = 0.0
         self.is_playing = False
         self.keys_pressed = [False] * self.lanes
         self.judgment.reset()
-        
-        # 重置时钟
+
+        self.miss_scan_cursor = 0
+        self.lane_scan_cursors = {lane: 0 for lane in range(self.lanes)}
+
         self.clock.reset()
-        
+
     def start_game(self) -> None:
         """开始游戏"""
         logger.info("游戏开始")
@@ -237,7 +247,10 @@ class GameEngine:
         # 切换到结算界面
         if hasattr(self, 'app') and self.app and hasattr(self.app, 'screen_manager'):
             logger.info("切换到结算界面")
-            self.app.screen_manager.current = 'result'
+            try:
+                self.app.screen_manager.current = 'result'
+            except Exception as e:
+                logger.error(f"Failed to switch to result screen: {e}")
         else:
             logger.error("无法切换到结算界面：screen_manager 不可用")
             
@@ -264,39 +277,45 @@ class GameEngine:
         
         # 更新UI
         if self.play_ui:
-            self.play_ui.update(self.current_time)
+            try:
+                self.play_ui.update(self.current_time)
+            except Exception as e:
+                logger.error(f"PlayUI update failed: {e}")
             
     def _update_notes(self) -> None:
-        """更新音符状态"""
+        """Update notes with cursor-based scan (avoid full scan each frame)."""
         if not self.current_chart:
             return
-            
+
         current_time = self.current_time
         judgment_window = 0.12
-        
-        # 检查每个音符
-        for i, note in enumerate(self.notes):
-            note_time = self.note_times[i]
-            
-            # 检查时间是否有效
-            if note_time is None:
+        judged_notes = self.judgment.judged_notes
+
+        while self.miss_scan_cursor < len(self.note_order_by_time):
+            note_idx = self.note_order_by_time[self.miss_scan_cursor]
+
+            if note_idx in judged_notes:
+                self.miss_scan_cursor += 1
                 continue
-                
-            # 如果音符已经经过判定窗口，自动判定为MISS
-            if current_time > note_time + judgment_window and i not in self.judgment.judged_notes:
-                # 自动MISS
-                result = self.judgment.judge_note(note, current_time, note_time, True)
-                if result:
-                    self.judgment.judged_notes[i] = result
-                    
-                    # 触发回调
-                    try:
-                        self._trigger_callbacks('on_note_miss', result)
-                        self._trigger_callbacks('on_combo_change', self.judgment.get_combo())
-                        self._trigger_callbacks('on_score_change', self.judgment.get_score())
-                    except Exception as e:
-                        logger.error(f"触发回调失败: {e}")
-                        
+
+            note_time = self.note_times[note_idx]
+            if note_time is None:
+                self.miss_scan_cursor += 1
+                continue
+
+            if current_time <= note_time + judgment_window:
+                break
+
+            note = self.notes[note_idx]
+            result = self.judgment.judge_note(note, current_time, note_time, True)
+            if result:
+                judged_notes[note_idx] = result
+                self._trigger_callbacks('on_note_miss', result)
+                self._trigger_callbacks('on_combo_change', self.judgment.get_combo())
+                self._trigger_callbacks('on_score_change', self.judgment.get_score())
+
+            self.miss_scan_cursor += 1
+
     def handle_input(self, lane: int, pressed: bool) -> None:
         """
         处理输入
@@ -319,54 +338,63 @@ class GameEngine:
             self._check_note_hit(lane)
             
     def _check_note_hit(self, lane: int) -> None:
-        """检查指定轨道上的音符命中"""
+        """Check hit on lane with cursor-based scan."""
         if not self.current_chart:
             return
-            
+
         current_time = self.current_time
         judgment_window = 0.12
-        
-        # 查找在判定窗口内的音符
-        for i, note in enumerate(self.notes):
-            # 只检查指定轨道的音符
-            if note.column != lane:
+        judged_notes = self.judgment.judged_notes
+
+        lane_notes = self.lane_note_indices.get(lane, [])
+        cursor = self.lane_scan_cursors.get(lane, 0)
+
+        while cursor < len(lane_notes):
+            note_idx = lane_notes[cursor]
+
+            if note_idx in judged_notes:
+                cursor += 1
                 continue
-                
-            # 跳过已判定的音符
-            if i in self.judgment.judged_notes:
-                continue
-                
-            note_time = self.note_times[i]
+
+            note_time = self.note_times[note_idx]
             if note_time is None:
+                cursor += 1
                 continue
-                
-            time_diff = abs(current_time - note_time)
-            
-            # 如果在判定窗口内
-            if time_diff <= judgment_window:
-                # 进行判定
-                result = self.judgment.judge_note(note, current_time, note_time, True)
-                if result:
-                    self.judgment.judged_notes[i] = result
-                    
-                    # 如果是长按音符，开始追踪
-                    if note.type == NoteType.HOLD:
-                        self.hold_notes[i] = {
-                            'note': note,
-                            'start_time': current_time,
-                            'pressed': True
-                        }
-                    
-                    # 触发回调
-                    self._trigger_callbacks('on_note_hit', result)
-                    self._trigger_callbacks('on_combo_change', self.judgment.get_combo())
-                    self._trigger_callbacks('on_score_change', self.judgment.get_score())
-                    
-                    # 播放判定音效
-                    if note.sound:
-                        self.audio.play_sound(note.sound, note.volume)
-                    break
-                    
+
+            # Too late for this note, move cursor forward.
+            if current_time > note_time + judgment_window:
+                cursor += 1
+                continue
+
+            # Next note has not reached judgment window yet.
+            if current_time < note_time - judgment_window:
+                break
+
+            note = self.notes[note_idx]
+            result = self.judgment.judge_note(note, current_time, note_time, True)
+            if result:
+                judged_notes[note_idx] = result
+                if note.type == NoteType.HOLD:
+                    self.hold_notes[note_idx] = {
+                        'note': note,
+                        'start_time': current_time,
+                        'pressed': True,
+                    }
+
+                self._trigger_callbacks('on_note_hit', result)
+                self._trigger_callbacks('on_combo_change', self.judgment.get_combo())
+                self._trigger_callbacks('on_score_change', self.judgment.get_score())
+
+                if note.sound:
+                    self.audio.play_sound(note.sound, note.volume)
+
+                cursor += 1
+                break
+
+            break
+
+        self.lane_scan_cursors[lane] = cursor
+
     def _check_hold_release(self, lane: int) -> None:
         """检查长按音符释放"""
         current_time = self.current_time
@@ -404,47 +432,6 @@ class GameEngine:
                     # 移除追踪
                     self.hold_notes.pop(note_idx, None)
             
-    def _check_note_hit(self, lane: int) -> None:
-        """检查指定轨道上的音符命中"""
-        if not self.current_chart:
-            return
-            
-        current_time = self.current_time
-        judgment_window = 0.12  # 120ms转换为秒
-        
-        # 查找在判定窗口内的音符
-        for i, note in enumerate(self.notes):
-            # 只检查指定轨道的音符
-            if note.column != lane:
-                continue
-                
-            # 跳过已判定的音符
-            if i in self.judgment.judged_notes:
-                continue
-                
-            note_time = self.note_times[i]
-            if note_time is None:
-                continue
-                
-            time_diff = abs(current_time - note_time)
-            
-            # 如果在判定窗口内
-            if time_diff <= judgment_window:
-                # 进行判定
-                result = self.judgment.judge_note(note, current_time, note_time, True)
-                if result:
-                    self.judgment.judged_notes[i] = result
-                    
-                    # 触发回调
-                    self._trigger_callbacks('on_note_hit', result)
-                    self._trigger_callbacks('on_combo_change', self.judgment.get_combo())
-                    self._trigger_callbacks('on_score_change', self.judgment.get_score())
-                    
-                    # 播放判定音效
-                    if note.sound:
-                        self.audio.play_sound(note.sound, note.volume)
-                    break
-                    
     def change_state(self, new_state: GameState) -> None:
         """改变游戏状态"""
         old_state = self.state
@@ -465,14 +452,14 @@ class GameEngine:
                 self.callbacks[event].remove(callback)
                 
     def _trigger_callbacks(self, event: str, *args, **kwargs) -> None:
-        """触发回调函数"""
+        """Trigger registered callbacks for a given event."""
         if event in self.callbacks:
             for callback in self.callbacks[event]:
                 try:
                     callback(*args, **kwargs)
-                except Exception as e:
-                    logger.error(f"回调函数执行失败 {event}: {e}")
-                    
+                except Exception:
+                    logger.exception(f"Callback execution failed: {event}")
+
     def _on_key_down(self, window, key, scancode, codepoint, modifiers) -> bool:
         """处理键盘按下事件"""
         # 获取键位映射
