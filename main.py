@@ -53,6 +53,8 @@ class MystiaRhythmApp(App):
             resolution = config.get('graphics.resolution', [1280, 720])
             Window.size = tuple(resolution)
             Window.title = 'Mystia Rhythm'
+            Window.minimum_width = 960
+            Window.minimum_height = 540
             
             if config.get('graphics.fullscreen', False):
                 Window.fullscreen = 'auto'
@@ -108,6 +110,7 @@ class MystiaRhythmApp(App):
             
             # 启动游戏引擎更新循环
             Clock.schedule_interval(self.game_engine.update, 1.0 / 60.0)
+            Window.bind(on_resize=self._on_window_resize)
             
             logger.info("应用构建完成")
             return self.screen_manager
@@ -131,6 +134,18 @@ class MystiaRhythmApp(App):
         logger.info("=" * 60)
         logger.info("Mystia Rhythm 应用已关闭")
         logger.info("=" * 60)
+
+    def _on_window_resize(self, window, width, height):
+        """Broadcast window resize to screens for responsive relayout."""
+        try:
+            if not self.screen_manager:
+                return
+
+            for screen in self.screen_manager.screens:
+                if hasattr(screen, "on_window_resize"):
+                    screen.on_window_resize(width, height)
+        except Exception as e:
+            logger.error(f"窗口尺寸变更处理失败: {e}")
 
 
 def main():

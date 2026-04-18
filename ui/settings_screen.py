@@ -33,6 +33,12 @@ class SettingsScreen(BaseScreen):
         self.page_views = {}
         self.current_page = None
         self.page_host = None
+        self.main_layout = None
+        self.title_label = None
+        self.tab_bar = None
+        self.button_layout = None
+        self._row_labels = []
+        self._row_widgets = []
 
         self._create_ui()
 
@@ -117,7 +123,16 @@ class SettingsScreen(BaseScreen):
         main_layout.add_widget(self.page_host)
         main_layout.add_widget(button_layout)
 
+        self.main_layout = main_layout
+        self.title_label = title_label
+        self.tab_bar = tab_bar
+        self.button_layout = button_layout
+
+        self.bind(size=lambda *_: self._apply_responsive_layout())
+        self.bind(pos=lambda *_: self._apply_responsive_layout())
+
         self.add_widget(main_layout)
+        self._apply_responsive_layout()
 
     def _build_gameplay_page(self) -> ScrollView:
         content = self._new_page_content()
@@ -281,7 +296,43 @@ class SettingsScreen(BaseScreen):
         )
         row.add_widget(label)
         row.add_widget(control_widget)
+        self._row_labels.append(label)
+        self._row_widgets.append(row)
         return row
+
+    def _apply_responsive_layout(self):
+        """Apply responsive sizing based on current screen size."""
+        if not self.main_layout:
+            return
+
+        w = max(640, float(self.width))
+        h = max(360, float(self.height))
+        scale = min(w / 1280.0, h / 720.0)
+        scale = max(0.75, min(1.35, scale))
+
+        pad = int(18 * scale)
+        spacing = int(10 * scale)
+        self.main_layout.padding = [pad, pad, pad, pad]
+        self.main_layout.spacing = spacing
+
+        if self.title_label:
+            self.title_label.font_size = int(34 * scale)
+            self.title_label.height = int(56 * scale)
+
+        if self.tab_bar:
+            self.tab_bar.height = int(46 * scale)
+            self.tab_bar.spacing = max(6, int(8 * scale))
+
+        if self.button_layout:
+            self.button_layout.height = int(54 * scale)
+            self.button_layout.spacing = max(8, int(12 * scale))
+
+        label_width = max(120, min(280, int(w * 0.2)))
+        row_height = max(40, int(44 * scale))
+        for label in self._row_labels:
+            label.width = label_width
+        for row in self._row_widgets:
+            row.height = row_height
 
     def _on_switch_page(self, instance):
         if instance.state == 'down':
@@ -365,3 +416,7 @@ class SettingsScreen(BaseScreen):
     def on_enter(self, *args):
         self.opacity = 0
         Animation(opacity=1, duration=0.3).start(self)
+        self._apply_responsive_layout()
+
+    def on_window_resize(self, width, height):
+        self._apply_responsive_layout()
