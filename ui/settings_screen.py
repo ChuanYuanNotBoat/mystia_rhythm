@@ -400,6 +400,9 @@ class SettingsScreen(BaseScreen):
         lane = getattr(instance, 'lane', None)
         if lane is None:
             return
+        # If another lane is currently waiting for input, restore its button text.
+        if self._capture_lane is not None and self._capture_lane in self.custom_binding_buttons:
+            self._refresh_binding_button(self._capture_lane)
         self._capture_lane = lane
         instance.text = 'Press a key...'
 
@@ -415,6 +418,13 @@ class SettingsScreen(BaseScreen):
     def _on_capture_key_down(self, window, key, scancode, codepoint, modifiers):
         if self._capture_lane is None:
             return False
+
+        # ESC cancels binding capture without changing existing binding.
+        if key == 27:
+            lane = self._capture_lane
+            self._capture_lane = None
+            self._refresh_binding_button(lane)
+            return True
 
         c = (codepoint or '').strip().lower()
         if len(c) != 1:
